@@ -451,6 +451,26 @@ def should_end_conversation(history: List[Message]) -> bool:
     return False
 
 
+def create_summary(chair: Character, environment: str, theme: str, history: List[Message]) -> Message:
+    transcript = format_transcript(history)
+    system_prompt = (
+        "あなたは会話の議長です。最後に議論内容を要約し、"
+        "どのような論点が出て、どのような結論や示唆が得られたかをまとめます。"
+        "出力はセリフのみ。"
+    )
+    user_prompt = (
+        f"テーマ: {theme}\n"
+        f"環境: {environment}\n"
+        "以下が会話ログです。議長として議論の流れと結論を要約してください。\n"
+        + transcript
+    )
+    try:
+        text = call_ollama(chair, system_prompt, user_prompt)
+    except Exception:
+        text = "議論をまとめる途中で問題が発生しましたが、全体として多様な視点が提示されました。"
+    return Message(chair.name, chair.handle, text)
+
+
 def run_conversation(
     environment: str,
     characters: List[Character],
@@ -461,7 +481,9 @@ def run_conversation(
     chair = choose_chair(characters)
 
     opening = f"本日のテーマは「{theme}」です。"
-    history.append(Message(chair.name, chair.handle, opening))
+    opening_msg = Message(chair.name, chair.handle, opening)
+    history.append(opening_msg)
+    print(f"{opening_msg.speaker} (@{opening_msg.handle}): {opening_msg.text}")
 
     start = time.time()
     last_handle: Optional[str] = chair.handle
@@ -479,25 +501,29 @@ def run_conversation(
             response = call_ollama(speaker, system_prompt, transcript)
         except Exception:
             response = ""
-            history.append(
-                Message(
-                    chair.name,
-                    chair.handle,
-                    f"今の発言取得で問題があったよ。{speaker.name}はあとで話してね。",
-                )
+            fallback = Message(
+                chair.name,
+                chair.handle,
+                f"今の発言取得で問題があったよ。{speaker.name}はあとで話してね。",
             )
+            history.append(fallback)
+            print(f"{fallback.speaker} (@{fallback.handle}): {fallback.text}")
             last_handle = chair.handle
             continue
 
         if not response or len(response.strip()) < 2:
             target = random.choice([c for c in characters if c.handle != chair.handle])
             prompt = chair_prompt(chair, target)
-            history.append(Message(chair.name, chair.handle, prompt))
+            chair_msg = Message(chair.name, chair.handle, prompt)
+            history.append(chair_msg)
+            print(f"{chair_msg.speaker} (@{chair_msg.handle}): {chair_msg.text}")
             last_handle = chair.handle
             forced_next = target.handle
             continue
 
-        history.append(Message(speaker.name, speaker.handle, response))
+        msg = Message(speaker.name, speaker.handle, response)
+        history.append(msg)
+        print(f"{msg.speaker} (@{msg.handle}): {msg.text}")
         last_handle = speaker.handle
 
         mentions = detect_mentions(response, handles)
@@ -506,6 +532,10 @@ def run_conversation(
 
         if should_end_conversation(history):
             break
+
+    summary_msg = create_summary(chair, environment, theme, history)
+    history.append(summary_msg)
+    print(f"{summary_msg.speaker} (@{summary_msg.handle}): {summary_msg.text}")
 
     return history
 
@@ -529,11 +559,6 @@ def write_output(history: List[Message], environment: str, theme: str) -> str:
         f.write(content)
 
     return path
-
-
-def print_history(history: List[Message]) -> None:
-    for msg in history:
-        print(f"{msg.speaker} (@{msg.handle}): {msg.text}")
 
 
 def _load_config(args: argparse.Namespace) -> Tuple[str, List[Character]]:
@@ -565,7 +590,6 @@ def main() -> int:
 
     history = run_conversation(environment, characters, args.theme, args.max_seconds)
 
-    print_history(history)
     output_path = write_output(history, environment, args.theme)
     print(f"\n[output] {output_path}")
     return 0
