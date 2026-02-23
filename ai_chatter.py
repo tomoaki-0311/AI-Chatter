@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
-import json
 import os
 import random
 import re
@@ -106,6 +105,63 @@ def _build_personality_text(personality: object) -> str:
     return "\n".join(lines).strip()
 
 
+def _parse_kv_line(line: str) -> Optional[Tuple[str, str]]:
+    if ":" not in line:
+        return None
+    key, value = line.split(":", 1)
+    key = key.strip().lower()
+    value = value.strip()
+    if not key:
+        return None
+    return key, value
+
+
+def _parse_personality_section(lines: List[str]) -> object:
+    items: Dict[str, object] = {}
+    text_lines: List[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip("\n")
+        if line.strip() == "":
+            text_lines.append("")
+            i += 1
+            continue
+
+        if line.lstrip().startswith("-"):
+            entry = line.lstrip()[1:].strip()
+            if ":" in entry:
+                key, value = entry.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+                if value == "|":
+                    i += 1
+                    collected: List[str] = []
+                    while i < len(lines):
+                        next_line = lines[i]
+                        if next_line.startswith("    "):
+                            collected.append(next_line[4:].rstrip("\n"))
+                            i += 1
+                            continue
+                        if next_line.strip() == "":
+                            collected.append("")
+                            i += 1
+                            continue
+                        break
+                    items[key] = "\n".join(collected).strip()
+                    continue
+                items[key] = value
+                i += 1
+                continue
+
+        text_lines.append(line)
+        i += 1
+
+    if items:
+        return items
+    return "\n".join(text_lines).strip()
+
+
 def load_environment(path: str) -> str:
     if not os.path.exists(path):
         raise ConfigError(f"environment not found: {path}")
@@ -116,22 +172,50 @@ def load_environment(path: str) -> str:
     return content
 
 
-def load_avatar_file(path: str) -> Character:
+def parse_avatar_markdown(path: str) -> Character:
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        lines = f.readlines()
 
-    name = data.get("name")
+    meta: Dict[str, str] = {}
+    personality_lines: List[str] = []
+    in_personality = False
+
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        line = raw.rstrip("\n")
+
+        if line.strip().startswith("#"):
+            title = line.strip().lstrip("#").strip().lower()
+            if title in ("personality", "性格"):
+                in_personality = True
+            i += 1
+            continue
+
+        if in_personality:
+            personality_lines.append(raw.rstrip("\n"))
+            i += 1
+            continue
+
+        parsed = _parse_kv_line(line)
+        if parsed:
+            key, value = parsed
+            meta[key] = value
+        i += 1
+
+    name = meta.get("name")
     if not name:
         raise ConfigError(f"Avatar missing name: {path}")
-    handle = data.get("handle") or slugify_handle(name)
-    host = data.get("host")
-    model = data.get("model")
+    handle = meta.get("handle") or slugify_handle(name)
+    host = meta.get("host")
+    model = meta.get("model")
     if not host or not model:
         raise ConfigError(f"Avatar {name} missing host/model: {path}")
-    temperature = float(data.get("temperature", 0.7))
-    role = data.get("role", "")
-    personality_raw = data.get("personality", "")
-    personality = _build_personality_text(personality_raw)
+    temperature = float(meta.get("temperature", 0.7))
+    role = meta.get("role", "")
+
+    personality_raw = _parse_personality_section(personality_lines) if personality_lines else ""
+    personality = _build_personality_text(personality_raw) if personality_raw else ""
     if not personality:
         raise ConfigError(f"Avatar {name} missing personality: {path}")
 
@@ -153,13 +237,13 @@ def load_avatars(directory: str) -> List[Character]:
     entries = [
         os.path.join(directory, name)
         for name in sorted(os.listdir(directory))
-        if name.endswith(".json")
+        if name.endswith(".md")
     ]
 
     if not entries:
-        raise ConfigError(f"No avatar json files found in: {directory}")
+        raise ConfigError(f"No avatar markdown files found in: {directory}")
 
-    return [load_avatar_file(path) for path in entries]
+    return [parse_avatar_markdown(path) for path in entries]
 
 
 # Legacy markdown config support
@@ -468,7 +552,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AI Chatter (Ollama local LLM)")
     parser.add_argument("--config", default="config/characters.md", help="legacy markdown config path")
     parser.add_argument("--env", default=None, help="environment markdown path")
-    parser.add_argument("--avatars-dir", default=None, help="avatars json directory")
+    parser.add_argument("--avatars-dir", default=None, help="avatars markdown directory")
     parser.add_argument("--theme", required=True, help="conversation theme")
     parser.add_argument("--max-seconds", type=int, default=180, help="max duration in seconds")
     args = parser.parse_args()

@@ -19,28 +19,28 @@ python ai_chatter.py --theme "AIが人間に教えられることは？"
 環境とキャラクターを分割して管理します。
 
 - 環境: `config/environment.md`
-- アバター: `config/avatars/*.json`（1キャラ=1ファイル）
+- アバター: `config/avatars/*.md`（1キャラ=1ファイル）
 
 ### アバター設定（例）
-```json
-{
-  "name": "議長",
-  "handle": "chair",
-  "role": "chair",
-  "host": "localhost",
-  "model": "llama3.1:8b",
-  "temperature": 0.7,
-  "personality": {
-    "summary": "進行役として会話の流れを整える",
-    "traits": ["落ち着き", "整理力"],
-    "speaking_style": ["端的", "穏やか"],
-    "goals": ["結論に導く"],
-    "taboos": ["攻撃的な言い回し"]
-  }
-}
+```md
+# Avatar
+
+name: 議長
+handle: chair
+role: chair
+host: localhost
+model: llama3.1:8b
+temperature: 0.7
+
+## Personality
+- summary: 進行役として会話の流れを整える
+- traits: 落ち着き / 整理力
+- speaking_style: 端的 / 穏やか
+- goals: 結論に導く
+- taboos: 攻撃的な言い回し
 ```
 
-`personality` は文字列でも構いませんが、詳細な設定を入れると反映されやすくなります。
+`Personality` は箇条書き形式だけでなく、自由文でも構いません。
 
 ### 旧形式（互換）
 
