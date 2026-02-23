@@ -1,1 +1,1 @@
-requests>=2.31.0
+# No external dependencies. LocalLLMConnector is loaded via LOCAL_LLM_CONNECTOR_PATH or ../LocalLLMConnector.

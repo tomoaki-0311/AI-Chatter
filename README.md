@@ -1,6 +1,7 @@
 # AI Chatter
 
 AIキャラクター同士の会話を、ローカルLLM(Ollama)で生成して楽しむCLIです。
+LocalLLMConnector を利用します。
 
 ## 使い方
 
@@ -15,12 +16,42 @@ python ai_chatter.py --theme "AIが人間に教えられることは？"
 
 ## 設定
 
-`config/characters.md` に環境とキャラクターを定義します。
+環境とキャラクターを分割して管理します。
 
-- `# Environment` 配下: 会話の環境設定
-- `# Characters` 配下: キャラクターごとに `host` / `model` / `personality` を指定
+- 環境: `config/environment.md`
+- アバター: `config/avatars/*.json`（1キャラ=1ファイル）
 
-Ollamaのホストやモデルはキャラクターごとに変えられます。
+### アバター設定（例）
+```json
+{
+  "name": "議長",
+  "handle": "chair",
+  "role": "chair",
+  "host": "localhost",
+  "model": "llama3.1:8b",
+  "temperature": 0.7,
+  "personality": {
+    "summary": "進行役として会話の流れを整える",
+    "traits": ["落ち着き", "整理力"],
+    "speaking_style": ["端的", "穏やか"],
+    "goals": ["結論に導く"],
+    "taboos": ["攻撃的な言い回し"]
+  }
+}
+```
+
+`personality` は文字列でも構いませんが、詳細な設定を入れると反映されやすくなります。
+
+### 旧形式（互換）
+
+`config/characters.md` も引き続き利用できます。
+
+## LocalLLMConnector の指定
+
+以下のどちらかで読み込みます。
+
+- `LOCAL_LLM_CONNECTOR_PATH` を `.../LocalLLMConnector/python/src` に設定
+- リポジトリを `../LocalLLMConnector` に配置
 
 ## 出力
 

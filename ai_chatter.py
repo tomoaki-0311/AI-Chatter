@@ -8,11 +8,42 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-import requests
+from typing import Dict, Iterable, List, Optional, Tuple
 
 MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
+
+
+class ConfigError(Exception):
+    pass
+
+
+def _ensure_connector_import() -> None:
+    try:
+        import localllmconnector  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    env_path = os.environ.get("LOCAL_LLM_CONNECTOR_PATH")
+    candidates = []
+    if env_path:
+        candidates.append(env_path)
+    here = os.path.abspath(os.path.dirname(__file__))
+    candidates.append(os.path.join(here, "..", "LocalLLMConnector", "python", "src"))
+
+    for path in candidates:
+        path = os.path.abspath(path)
+        if os.path.exists(path) and path not in sys.path:
+            sys.path.insert(0, path)
+            return
+
+    raise ConfigError(
+        "LocalLLMConnector not found. Set LOCAL_LLM_CONNECTOR_PATH or place the repo in ../LocalLLMConnector"
+    )
+
+
+_ensure_connector_import()
+from localllmconnector import LocalLLMClient  # noqa: E402
 
 
 @dataclass
@@ -33,15 +64,105 @@ class Message:
     text: str
 
 
-class ConfigError(Exception):
-    pass
-
-
 def slugify_handle(name: str) -> str:
     slug = re.sub(r"\W+", "_", name.strip())
     slug = slug.strip("_").lower()
     return slug or "speaker"
 
+
+def _build_personality_text(personality: object) -> str:
+    if isinstance(personality, str):
+        return personality.strip()
+    if not isinstance(personality, dict):
+        raise ConfigError("personality must be a string or object")
+
+    order = [
+        ("summary", "概要"),
+        ("backstory", "背景"),
+        ("traits", "性格特性"),
+        ("values", "価値観"),
+        ("speaking_style", "話し方"),
+        ("likes", "好きなこと"),
+        ("dislikes", "苦手なこと"),
+        ("quirks", "癖"),
+        ("taboos", "避ける話題"),
+        ("goals", "目標"),
+        ("relationships", "関係性"),
+    ]
+
+    lines: List[str] = []
+    for key, label in order:
+        if key not in personality:
+            continue
+        value = personality[key]
+        if isinstance(value, list):
+            text = " / ".join(str(v) for v in value)
+        else:
+            text = str(value)
+        text = text.strip()
+        if text:
+            lines.append(f"{label}: {text}")
+
+    return "\n".join(lines).strip()
+
+
+def load_environment(path: str) -> str:
+    if not os.path.exists(path):
+        raise ConfigError(f"environment not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        raise ConfigError("Environment is empty")
+    return content
+
+
+def load_avatar_file(path: str) -> Character:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    name = data.get("name")
+    if not name:
+        raise ConfigError(f"Avatar missing name: {path}")
+    handle = data.get("handle") or slugify_handle(name)
+    host = data.get("host")
+    model = data.get("model")
+    if not host or not model:
+        raise ConfigError(f"Avatar {name} missing host/model: {path}")
+    temperature = float(data.get("temperature", 0.7))
+    role = data.get("role", "")
+    personality_raw = data.get("personality", "")
+    personality = _build_personality_text(personality_raw)
+    if not personality:
+        raise ConfigError(f"Avatar {name} missing personality: {path}")
+
+    return Character(
+        name=name,
+        handle=handle,
+        host=host,
+        model=model,
+        temperature=temperature,
+        personality=personality,
+        role=role,
+    )
+
+
+def load_avatars(directory: str) -> List[Character]:
+    if not os.path.isdir(directory):
+        raise ConfigError(f"avatars directory not found: {directory}")
+
+    entries = [
+        os.path.join(directory, name)
+        for name in sorted(os.listdir(directory))
+        if name.endswith(".json")
+    ]
+
+    if not entries:
+        raise ConfigError(f"No avatar json files found in: {directory}")
+
+    return [load_avatar_file(path) for path in entries]
+
+
+# Legacy markdown config support
 
 def parse_markdown_config(path: str) -> Tuple[str, List[Character]]:
     if not os.path.exists(path):
@@ -193,26 +314,20 @@ def build_system_prompt(
 
 
 def call_ollama(character: Character, system_prompt: str, transcript: str) -> str:
-    payload = {
-        "model": character.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    "以下がこれまでの会話ログです。流れに沿って発言してください。\n"
-                    + transcript
-                ),
-            },
-        ],
-        "options": {"temperature": character.temperature},
-        "stream": False,
-    }
-    url = character.host.rstrip("/") + "/api/chat"
-    resp = requests.post(url, json=payload, timeout=90)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("message", {}).get("content", "").strip()
+    client = LocalLLMClient(host=character.host)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": "以下がこれまでの会話ログです。流れに沿って発言してください。\n" + transcript,
+        },
+    ]
+    return client.chat(
+        model=character.model,
+        messages=messages,
+        options={"temperature": character.temperature},
+        stream=False,
+    ).strip()
 
 
 def detect_mentions(text: str, handles: List[str]) -> List[str]:
@@ -278,7 +393,7 @@ def run_conversation(
 
         try:
             response = call_ollama(speaker, system_prompt, transcript)
-        except Exception as exc:
+        except Exception:
             response = ""
             history.append(
                 Message(
@@ -337,15 +452,29 @@ def print_history(history: List[Message]) -> None:
         print(f"{msg.speaker} (@{msg.handle}): {msg.text}")
 
 
+def _load_config(args: argparse.Namespace) -> Tuple[str, List[Character]]:
+    if args.env or args.avatars_dir:
+        env_path = args.env or "config/environment.md"
+        avatars_dir = args.avatars_dir or "config/avatars"
+        return load_environment(env_path), load_avatars(avatars_dir)
+
+    if os.path.exists("config/environment.md") and os.path.isdir("config/avatars"):
+        return load_environment("config/environment.md"), load_avatars("config/avatars")
+
+    return parse_markdown_config(args.config)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Chatter (Ollama local LLM)")
-    parser.add_argument("--config", default="config/characters.md", help="config markdown path")
+    parser.add_argument("--config", default="config/characters.md", help="legacy markdown config path")
+    parser.add_argument("--env", default=None, help="environment markdown path")
+    parser.add_argument("--avatars-dir", default=None, help="avatars json directory")
     parser.add_argument("--theme", required=True, help="conversation theme")
     parser.add_argument("--max-seconds", type=int, default=180, help="max duration in seconds")
     args = parser.parse_args()
 
     try:
-        environment, characters = parse_markdown_config(args.config)
+        environment, characters = _load_config(args)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
